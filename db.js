@@ -15,6 +15,7 @@ async function connectDB() {
         console.log('All models synced successfully.');
     } catch (error) {
         console.error('Unable to connect to the database:', error);
+        throw error;
     }
 }
 

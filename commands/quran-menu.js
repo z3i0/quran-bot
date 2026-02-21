@@ -1,12 +1,6 @@
-const { 
-    SlashCommandBuilder, 
-    ActionRowBuilder, 
-    ButtonBuilder, 
-    ButtonStyle, 
-    EmbedBuilder,
-    StringSelectMenuBuilder,
-    StringSelectMenuOptionBuilder
-} = require('discord.js');
+const { SlashCommandBuilder, MessageFlags } = require('discord.js');
+const EmbedBuilder = require('../src/utils/EmbedBuilder');
+const ComponentBuilder = require('../src/utils/ComponentBuilder');
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -14,45 +8,35 @@ module.exports = {
         .setDescription('القائمة الرئيسية للقرآن الكريم'),
 
     async execute(interaction) {
-        const embed = new EmbedBuilder()
-            .setTitle('🕌 Quran Bot Menu')
-            .setDescription('مرحباً بك في البوت الإسلامي! اختر ما تريد من القائمة أدناه:')
-            .setColor('#00ff00')
-            .setThumbnail('https://cdn-icons-png.flaticon.com/512/6565/6565365.png')
-            .addFields(
-                { name: '📻 إذاعة القرآن الكريم', value: 'استمع إلى إذاعة القرآن الكريم مباشرة', inline: true },
-                { name: '📖 سور القرآن الكريم', value: 'اختر السورة والقارئ لعرض سورة من القرآن', inline: true }
-            )
-            .setFooter({ text: 'البوت الإسلامي - خدمة القرآن الكريم' })
-            .setTimestamp();
+        try {
+            // Create main menu embed using the new EmbedBuilder
+            const embed = EmbedBuilder.createMainMenuEmbed();
 
-        const row1 = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setCustomId('quran_radio')
-                    .setLabel('إذاعة القرآن')
-                    .setStyle(ButtonStyle.Primary)
-                    .setEmoji('📻'),
-                new ButtonBuilder()
-                    .setCustomId('quran_surah')
-                    .setLabel('القرآن الكريم')
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji('📖')
+            // Create main menu buttons using the new ComponentBuilder
+            const components = [ComponentBuilder.createMainMenuButtons()];
+
+            await interaction.reply({
+                embeds: [embed],
+                components,
+                ephemeral: false
+            });
+
+            console.log(`[QuranMenu] Main menu displayed for user ${interaction.user.tag} in guild ${interaction.guild.name}`);
+
+        } catch (error) {
+            console.error('[QuranMenu] Error displaying main menu:', error);
+
+            // Fallback error handling
+            const errorEmbed = EmbedBuilder.createErrorEmbed(
+                'خطأ',
+                'حدث خطأ في عرض القائمة الرئيسية'
             );
 
-        const row2 = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setCustomId('help')
-                    .setLabel('المساعدة')
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji('❓')
-            );
-
-        await interaction.reply({
-            embeds: [embed],
-            components: [row1, row2],
-            ephemeral: false
-        });
+            if (interaction.deferred || interaction.replied) {
+                await interaction.followUp({ embeds: [errorEmbed], flags: MessageFlags.Ephemeral });
+            } else {
+                await interaction.reply({ embeds: [errorEmbed], flags: MessageFlags.Ephemeral });
+            }
+        }
     }
 };

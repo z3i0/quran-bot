@@ -1,22 +1,14 @@
-const {
-    Client, GatewayIntentBits, PermissionsBitField
-} = require('discord.js');
-const voiceStateUpdateHandler = require('./events/voiceStateUpdate');
-const audioManager = require('./audioManager');
-require("dotenv").config();
-const fs = require('fs');
+const { Client, GatewayIntentBits } = require('discord.js');
 const { REST, Routes } = require('discord.js');
-
-const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildVoiceStates,
-    ]
-});
-
+const fs = require('fs');
 require('dotenv').config();
-const { connectDB } = require('./db');
 
+// Import the new unified systems
+const interactionManager = require('./src/core/InteractionManager');
+const audioManager = require('./src/core/AudioManager');
+const { BOT_INFO } = require('./src/utils/Constants');
+
+// Load database models
 require('./models/Guild');
 require('./models/User');
 require('./models/Bookmark');
@@ -24,107 +16,202 @@ require('./models/Surah');
 require('./models/Reciter');
 require('./models/ReciterSurahLink');
 
-const Guild = require('./models/Guild');
-
+// Environment variables
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 
-let STREAM_URL = 'https://stream.radiojar.com/8s5u5tpdtwzuv'; // default stream
-// let STREAM_URL = 'https://download.quranicaudio.com/quran/maher_almu3aiqly/year1440//022.mp3'; // default stream
-let currentVolume = 1;
-
-client.commands = new Map();
-
-// Load all command files
-const commandFiles = fs.readdirSync('./commands').filter(file => file.endsWith('.js'));
-for (const file of commandFiles) {
-    const command = require(`./commands/${file}`);
-    client.commands.set(command.data.name, command);
+if (!TOKEN || !CLIENT_ID) {
+    console.error('❌ Missing required environment variables: TOKEN and CLIENT_ID');
+    process.exit(1);
 }
 
-client.on('voiceStateUpdate', require('./events/voiceStateUpdate'));
-
-async function joinAndPlay(guildData, client) {
-    try {
-        const guild = client.guilds.cache.get(guildData.guildId);
-        if (!guild) return;
-
-        const channel = guild.channels.cache.get(guildData.voiceChannelId);
-        if (!channel || channel.type !== 2) return; // 2 = voice channel
-
-        const permissions = channel.permissionsFor(guild.members.me);
-        if (!permissions.has(PermissionsBitField.Flags.Connect) || !permissions.has(PermissionsBitField.Flags.Speak)) {
-            console.error(`❌ Bot lacks Connect/Speak permissions in channel ${channel.id} (guild ${guild.id})`);
-            return;
-        }
-
-        await audioManager.joinVoiceChannel(guildData.guildId, channel.id, guild);
-        
-        await audioManager.playRadio(guildData.guildId, STREAM_URL);
-        
-    } catch (error) {
-        console.error('❌ خطأ في الانضمام وتشغيل الراديو:', error);
-    }
-}
-
-// Handle command interactions
-client.on('interactionCreate', async interaction => {
-  // Handle slash commands
-  if (interaction.isChatInputCommand()) {
-    const command = client.commands.get(interaction.commandName);
-    if (!command) return;
-
-    try {
-      await command.execute(interaction);
-    } catch (err) {
-      console.error('Command execution error:', err);
-      if (interaction.deferred || interaction.replied) {
-        await interaction.followUp({ content: '❌ An error occurred while executing the command.', flags: MessageFlags.Ephemeral });
-      } else {
-        await interaction.reply({ content: '❌ An error occurred while executing the command.', flags: MessageFlags.Ephemeral });
-      }
-    }
-    return;
-  }
-
-  // Handle other interactions (buttons, select menus, modals)
-  try {
-    const interactionHandler = require('./events/interactionCreate');
-    await interactionHandler.execute(interaction);
-  } catch (err) {
-    console.error('Interaction handling error:', err);
-  }
+// Create Discord client
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildVoiceStates,
+        GatewayIntentBits.GuildMessages
+    ]
 });
 
-// Bot readiness logic
-client.once('clientReady', async () => {
-    console.log(`✅ Logged in as ${client.user.tag}`);
-    await connectDB();
+// Initialize commands collection
+client.commands = new Map();
 
-    // Register slash commands
-    const commands = [];
+// =============================================================================
+// COMMAND LOADING
+// =============================================================================
+
+/**
+ * Load all command files
+ */
+function loadCommands() {
+    const commandFiles = fs.readdirSync('./commands').filter(file => file.endsWith('.js'));
+
+    console.log(`📂 Loading ${commandFiles.length} command(s)...`);
+
     for (const file of commandFiles) {
-        const command = require(`./commands/${file}`);
+        try {
+            const command = require(`./commands/${file}`);
+            if (command.data && command.execute) {
+                client.commands.set(command.data.name, command);
+                console.log(`✅ Loaded command: ${command.data.name}`);
+            } else {
+                console.warn(`⚠️ Command ${file} is missing required properties`);
+            }
+        } catch (error) {
+            console.error(`❌ Error loading command ${file}:`, error);
+        }
+    }
+}
+
+/**
+ * Register slash commands with Discord
+ */
+async function registerSlashCommands() {
+    const commands = [];
+
+    for (const command of client.commands.values()) {
         commands.push(command.data.toJSON());
     }
 
     const rest = new REST({ version: '10' }).setToken(TOKEN);
+
     try {
-        await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-        console.log(`✅ Slash commands registered successfully: ${commands.length} command(s).`);
+        console.log('🔄 Registering slash commands...');
+
+        await rest.put(
+            Routes.applicationCommands(CLIENT_ID),
+            { body: commands }
+        );
+
+        console.log(`✅ Successfully registered ${commands.length} slash command(s)`);
     } catch (error) {
         console.error('❌ Failed to register slash commands:', error);
+        throw error;
     }
+}
 
-    // Join 24/7 voice channels
-    try {
-    const guilds = await Guild.findAll({ where: { voice24_7: true } });
-    for (const guildData of guilds) {
-        joinAndPlay(guildData, client);
+// =============================================================================
+// EVENT LOADING
+// =============================================================================
+
+/**
+ * Load all event files
+ */
+function loadEvents() {
+    const eventFiles = fs.readdirSync('./src/events').filter(file => file.endsWith('.js'));
+
+    console.log(`📂 Loading ${eventFiles.length} event(s)...`);
+
+    for (const file of eventFiles) {
+        try {
+            const event = require(`./src/events/${file}`);
+
+            if (event.once) {
+                client.once(event.name, (...args) => event.execute(...args));
+            } else {
+                client.on(event.name, (...args) => event.execute(...args));
+            }
+
+            console.log(`✅ Loaded event: ${event.name}`);
+        } catch (error) {
+            console.error(`❌ Error loading event ${file}:`, error);
+        }
     }
-    } catch (err) {
-        console.error('❌ Error joining 24/7 voice channels:', err);
-    }
+}
+
+// =============================================================================
+// LEGACY INTERACTION HANDLING (for compatibility)
+// =============================================================================
+
+/**
+ * Handle interactions through the new unified system
+ */
+// Interactions are handled by src/events/interactionCreate.js through the event loader below.
+
+// =============================================================================
+// ERROR HANDLING
+// =============================================================================
+
+/**
+ * Handle uncaught exceptions
+ */
+process.on('uncaughtException', (error) => {
+    console.error('💥 Uncaught Exception:', error);
+    // Don't exit the process, just log the error
 });
 
-client.login(TOKEN);
+/**
+ * Handle unhandled promise rejections
+ */
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
+    // Don't exit the process, just log the error
+});
+
+/**
+ * Handle process termination signals
+ */
+process.on('SIGTERM', async () => {
+    console.log('📴 Received SIGTERM, shutting down gracefully...');
+    await shutdown();
+});
+
+process.on('SIGINT', async () => {
+    console.log('📴 Received SIGINT, shutting down gracefully...');
+    await shutdown();
+});
+
+/**
+ * Graceful shutdown function
+ */
+async function shutdown() {
+    try {
+        console.log('🔄 Starting graceful shutdown...');
+
+        // Shutdown audio manager
+        await audioManager.shutdown();
+
+        // Destroy Discord client
+        client.destroy();
+
+        console.log('✅ Graceful shutdown completed');
+        process.exit(0);
+    } catch (error) {
+        console.error('❌ Error during shutdown:', error);
+        process.exit(1);
+    }
+}
+
+// =============================================================================
+// INITIALIZATION
+// =============================================================================
+
+/**
+ * Initialize the bot
+ */
+async function initialize() {
+    try {
+        console.log(`🚀 Starting ${BOT_INFO.NAME} v${BOT_INFO.VERSION}...`);
+
+        // Load commands and events
+        loadCommands();
+        loadEvents();
+
+        // Register slash commands
+        await registerSlashCommands();
+
+        // Login to Discord
+        await client.login(TOKEN);
+
+    } catch (error) {
+        console.error('💥 Failed to initialize bot:', error);
+        process.exit(1);
+    }
+}
+
+// Start the bot
+initialize();
+
+// Export client for potential external use
+module.exports = client;
