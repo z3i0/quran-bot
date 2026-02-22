@@ -70,14 +70,7 @@ module.exports = {
                         continue;
                     }
 
-                    // Check if there are human members in the channel
-                    const humanMembers = channel.members.filter(member => !member.user.bot);
-                    if (humanMembers.size === 0) {
-                        console.log(`ℹ️ Skipping empty voice channel in guild ${guild.name}`);
-                        continue;
-                    }
-
-                    // Join voice channel and start default stream
+                    // Join voice channel regardless of human members if it's in this 24/7 list
                     await audioManager.joinVoiceChannel(guildData.guildId, guildData.voiceChannelId, guild);
 
                     // Start default radio stream

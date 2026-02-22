@@ -61,7 +61,33 @@ class AudioManager {
                 throw new Error(MESSAGES.ERRORS.PERMISSION_DENIED);
             }
 
-            // Clean up existing connection
+            // Check if already connected to the SAME channel and connection is healthy
+            const existingConnection = this.connections.get(guildId) || getVoiceConnection(guildId);
+            if (existingConnection &&
+                existingConnection.joinConfig.channelId === channelId &&
+                existingConnection.state.status !== VoiceConnectionStatus.Destroyed &&
+                existingConnection.state.status !== VoiceConnectionStatus.Disconnected) {
+
+                console.log(`[AudioManager] Already connected to ${channelId}, skipping join.`);
+
+                // Ensure internally tracked if it wasn't
+                if (!this.connections.has(guildId)) {
+                    this.connections.set(guildId, existingConnection);
+                }
+
+                // Check if player exists, if not create one
+                let player = this.players.get(guildId);
+                if (!player) {
+                    player = createAudioPlayer();
+                    existingConnection.subscribe(player);
+                    this.players.set(guildId, player);
+                    this.setupPlayerListeners(guildId, player);
+                }
+
+                return { connection: existingConnection, player };
+            }
+
+            // Clean up existing connection if it's different or unhealthy
             await this.cleanupGuildResources(guildId);
 
             // Create new connection
@@ -749,16 +775,27 @@ class AudioManager {
         if (guildSettings.voice24_7 || humanMembers.size > 0) {
             console.log(`[AudioManager] Bot was disconnected from voice channel. Rejoining due to 24/7 mode or active members.`);
 
+            // Don't schedule rejoin if already connected
+            if (this.connections.has(oldState.guild.id)) {
+                return;
+            }
+
             // Wait a bit before rejoining to avoid rate limits
             setTimeout(async () => {
                 try {
+                    // Check again inside timeout to avoid race conditions
+                    const currentConnection = getVoiceConnection(oldState.guild.id);
+                    if (currentConnection && currentConnection.state.status !== VoiceConnectionStatus.Destroyed) {
+                        return;
+                    }
+
                     await this.joinVoiceChannel(oldState.guild.id, guildSettings.voiceChannelId, oldState.guild);
                     // Restore previous stream if any
                     await this.restoreStream(oldState.guild.id);
                 } catch (error) {
                     console.error('[AudioManager] Error rejoining voice channel:', error);
                 }
-            }, 2000);
+            }, 3000);
         }
     }
 
